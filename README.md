@@ -816,7 +816,7 @@ key on startup, so there is a few properties you need to/can set, these are:
 jasypt.encryptor.gcm-secret-key-password="chupacabras"
 #Optional, defaults to "1000"
 jasypt.encryptor.key-obtention-iterations="1000"
-#Optional, defaults to 0, no salt. If provided, specify the salt string in ba64 format
+#Required when using a password, specify the salt string in ba64 format (at least 16 bytes)
 jasypt.encryptor.gcm-secret-key-salt="HrqoFr44GtkAhhYN+jP8Ag=="
 #Optional, defaults to PBKDF2WithHmacSHA256
 jasypt.encryptor.gcm-secret-key-algorithm="PBKDF2WithHmacSHA256"

@@ -1,8 +1,11 @@
 package com.ulisesbocchio.jasyptspringboot;
 
+import com.ulisesbocchio.jasyptspringboot.configuration.StringEncryptorBuilder;
 import com.ulisesbocchio.jasyptspringboot.encryptor.*;
+import com.ulisesbocchio.jasyptspringboot.properties.JasyptEncryptorConfigurationProperties;
 import com.ulisesbocchio.jasyptspringboot.util.AsymmetricCryptography;
 import lombok.SneakyThrows;
+import org.jasypt.encryption.StringEncryptor;
 import org.jasypt.salt.RandomSaltGenerator;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,11 +14,14 @@ import org.junit.jupiter.api.function.Executable;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.util.FileCopyUtils;
 
+import javax.crypto.AEADBadTagException;
+import javax.crypto.SecretKey;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.Provider;
 import java.security.SecureRandom;
 import java.security.Security;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.ForkJoinPool;
@@ -25,7 +31,12 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class EncryptorTest {
 
@@ -344,13 +355,12 @@ public class EncryptorTest {
     public void test_GcmPasswordNoSaltEncryptor_encryption() {
         final String message = "This is the secret message... BOOHOOO!";
 
-        final String ciphertext = gcmPasswordNoSaltEncryptor.encrypt(message);
+        // a password without a salt must not fall back to a predictable all-zero salt
+        assertNull(gcmPasswordNoSaltEncryptorConfig.getSecretKeySaltGenerator());
 
-        System.out.println(ciphertext);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> gcmPasswordNoSaltEncryptor.encrypt(message));
 
-        final String decrypted = gcmPasswordNoSaltEncryptor.decrypt(ciphertext);
-
-        assertEquals(message, decrypted);
+        assertEquals("Secret key Salt must be provided with password", e.getMessage());
     }
 
     @Test
@@ -358,13 +368,96 @@ public class EncryptorTest {
     public void test_GcmPasswordNoSaltEncryptor_encryption2() {
         final String message = "This is the secret message... BOOHOOO!";
 
-        final String ciphertext = gcmPasswordNoSaltEncryptor.encrypt(message);
+        final String ciphertext = gcmPasswordEncryptor.encrypt(message);
 
         SimpleGCMStringEncryptor encryptor = new SimpleGCMStringEncryptor(gcmPasswordNoSaltEncryptorConfig);
 
-        final String decrypted = encryptor.decrypt(ciphertext);
+        assertThrows(IllegalArgumentException.class, () -> encryptor.decrypt(ciphertext));
+    }
 
-        assertEquals(message, decrypted);
+    @Test
+    public void test_GcmByteEncryptor_passwordWithoutSalt_isRejected() {
+        final byte[] message = "chupacabras".getBytes(StandardCharsets.UTF_8);
+        SimpleGCMConfig config = new SimpleGCMConfig();
+        config.setSecretKeyPassword("sumbudrule");
+        SimpleGCMByteEncryptor encryptor = new SimpleGCMByteEncryptor(config);
+
+        assertNull(config.getSecretKeySaltGenerator());
+        assertThrows(IllegalArgumentException.class, () -> encryptor.encrypt(message));
+        assertThrows(IllegalArgumentException.class, () -> encryptor.decrypt(new byte[SimpleGCMByteEncryptor.GCM_IV_LENGTH + 16]));
+    }
+
+    @Test
+    @SneakyThrows
+    public void test_GcmByteEncryptor_passwordWithSalt_encryption() {
+        final byte[] message = "chupacabras".getBytes(StandardCharsets.UTF_8);
+        SimpleGCMConfig config = new SimpleGCMConfig();
+        config.setSecretKeyPassword("sumbudrule");
+        config.setSecretKeySalt(randomBase64Salt());
+
+        final byte[] ciphertext = new SimpleGCMByteEncryptor(config).encrypt(message);
+
+        assertArrayEquals(message, new SimpleGCMByteEncryptor(config).decrypt(ciphertext));
+    }
+
+    @Test
+    @SneakyThrows
+    public void test_GcmByteEncryptor_passwordWithSaltGenerator_encryption() {
+        final byte[] message = "chupacabras".getBytes(StandardCharsets.UTF_8);
+        SimpleGCMConfig config = new SimpleGCMConfig();
+        config.setSecretKeyPassword("sumbudrule");
+        FixedBase64ByteArraySaltGenerator saltGenerator = new FixedBase64ByteArraySaltGenerator(randomBase64Salt());
+        config.setSaltGenerator(saltGenerator);
+
+        assertSame(saltGenerator, config.getSecretKeySaltGenerator());
+
+        final byte[] ciphertext = new SimpleGCMByteEncryptor(config).encrypt(message);
+
+        assertArrayEquals(message, new SimpleGCMByteEncryptor(config).decrypt(ciphertext));
+    }
+
+    @Test
+    @SneakyThrows
+    public void test_GcmPassword_differentSalts_deriveDifferentKeys() {
+        final byte[] message = "chupacabras".getBytes(StandardCharsets.UTF_8);
+        SimpleGCMConfig config1 = new SimpleGCMConfig();
+        config1.setSecretKeyPassword("sumbudrule");
+        config1.setSecretKeySalt(randomBase64Salt());
+        SimpleGCMConfig config2 = new SimpleGCMConfig();
+        config2.setSecretKeyPassword("sumbudrule");
+        config2.setSecretKeySalt(randomBase64Salt());
+
+        SecretKey key1 = SimpleGCMByteEncryptor.getAESKeyFromPassword(config1.getSecretKeyPasswordChars(), config1.getSecretKeySaltGenerator(), config1.getSecretKeyIterations(), config1.getSecretKeyAlgorithm());
+        SecretKey key2 = SimpleGCMByteEncryptor.getAESKeyFromPassword(config2.getSecretKeyPasswordChars(), config2.getSecretKeySaltGenerator(), config2.getSecretKeyIterations(), config2.getSecretKeyAlgorithm());
+
+        assertFalse(Arrays.equals(key1.getEncoded(), key2.getEncoded()));
+
+        final byte[] ciphertext = new SimpleGCMByteEncryptor(config1).encrypt(message);
+
+        assertThrows(AEADBadTagException.class, () -> new SimpleGCMByteEncryptor(config2).decrypt(ciphertext));
+    }
+
+    @Test
+    public void test_GcmPasswordWithoutSalt_fromConfigProperties_isRejected() {
+        final String message = "This is the secret message... BOOHOOO!";
+        JasyptEncryptorConfigurationProperties configProps = new JasyptEncryptorConfigurationProperties();
+        configProps.setGcmSecretKeyPassword("sumbudrule");
+
+        StringEncryptor noSaltEncryptor = new StringEncryptorBuilder(configProps, "jasypt.encryptor").build();
+
+        assertThrows(IllegalArgumentException.class, () -> noSaltEncryptor.encrypt(message));
+
+        configProps.setGcmSecretKeySalt(randomBase64Salt());
+
+        StringEncryptor saltEncryptor = new StringEncryptorBuilder(configProps, "jasypt.encryptor").build();
+
+        assertEquals(message, saltEncryptor.decrypt(saltEncryptor.encrypt(message)));
+    }
+
+    private static String randomBase64Salt() {
+        byte[] salt = new byte[SimpleGCMByteEncryptor.AES_KEY_PASSWORD_SALT_LENGTH];
+        new SecureRandom().nextBytes(salt);
+        return Base64.getEncoder().encodeToString(salt);
     }
 
     @Test

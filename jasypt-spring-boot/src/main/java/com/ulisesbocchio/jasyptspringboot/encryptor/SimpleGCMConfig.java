@@ -5,7 +5,6 @@ import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
 import org.jasypt.iv.IvGenerator;
 import org.jasypt.salt.SaltGenerator;
-import org.jasypt.salt.ZeroSaltGenerator;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
@@ -51,11 +50,16 @@ public class SimpleGCMConfig {
         return secretKeyPassword.toCharArray();
     }
 
+    /**
+     * Salt generator used to derive the secret key from {@code secretKeyPassword}: the explicit {@code saltGenerator}
+     * if set, otherwise a fixed generator for the base64 {@code secretKeySalt}. There is no fallback to an all-zero
+     * salt; when neither is configured this returns {@code null} and password based key derivation is rejected.
+     */
     public SaltGenerator getSecretKeySaltGenerator() {
         return saltGenerator != null ?
                 saltGenerator :
                 (secretKeySalt == null ?
-                        new ZeroSaltGenerator() :
+                        null :
                         new FixedBase64ByteArraySaltGenerator(secretKeySalt));
     }
 
