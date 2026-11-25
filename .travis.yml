@@ -4,13 +4,17 @@ jdk:
   - openjdk8
   - openjdk11
   - openjdk12
-notifications:
-  webhooks:
-    urls:
-      - https://webhooks.gitter.im/e/754eed67f5ed5a0c5de5
-    on_success: always  # options: [always|never|change] default: always
-    on_failure: always  # options: [always|never|change] default: always
-    on_start: false     # default: false
-after_success:
-  - coveralls
+before_install:
+  - |
+    case "$TRAVIS_JDK_VERSION" in
+      openjdk8) ZULU=zulu8.98.0.201-ca-jdk8.0.514-linux_x64 ;;
+      openjdk12) ZULU=zulu12.3.11-ca-jdk12.0.2-linux_x64 ;;
+      *) ZULU= ;;
+    esac
+    if [ -n "$ZULU" ]; then
+      curl -fsSL "https://cdn.azul.com/zulu/bin/$ZULU.tar.gz" | tar xz -C "$HOME"
+      export JAVA_HOME="$HOME/$ZULU"
+      export PATH="$JAVA_HOME/bin:$PATH"
+    fi
+  - java -version
 install: mvn package -Dgpg.skip=true

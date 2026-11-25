@@ -1,6 +1,12 @@
 name: Java CI
 
-on: [push]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Space-separated test class names/patterns, passed to surefire as -Dtest (e.g. FooTest BarTest)'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -9,6 +15,7 @@ concurrency:
 jobs:
   build_zulu:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         java: [ '8', '11', '12', '13', '15', '16', '17', '19' ]
@@ -16,12 +23,18 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Set up Java ${{ matrix.java }} Zulu
-      uses: actions/setup-java@v2
+      uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: ${{ matrix.java }}
+        cache: maven
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      env:
+        TEST_FILTER: ${{ inputs.test-filter }}
+      run: |
+        TEST_ARGS=()
+        if [ -n "$TEST_FILTER" ]; then TEST_ARGS=("-Dtest=${TEST_FILTER// /,}" -Dsurefire.failIfNoSpecifiedTests=false); fi
+        mvn -B package --file pom.xml "${TEST_ARGS[@]}"
     - name: Install artifact locally
       run: mvn -B install -DskipTests --file pom.xml
     - name: Checkout sample projects
@@ -29,13 +42,16 @@ jobs:
       with:
         repository: ulisesbocchio/jasypt-spring-boot-samples
         path: jasypt-spring-boot-samples
-        ref: master
-        token: ${{ secrets.CHECKOUT_PAT }}
+        ref: 64c90709a20ff1dce6959332fd66b6473f61244a
+    - name: Drop sample test relying on the removed GCM zero-salt fallback (CVE-2026-9370)
+      # jasypt.encryptor.gcm-secret-key-password without gcm-secret-key-salt is now rejected instead of deriving the key with an all-zero salt
+      run: rm jasypt-spring-boot-samples/jasypt-spring-boot-demo-custom-encryptor-gcm/src/test/java/demo/NoSaltPasswordGcmEncryptorDemoApplicationTest.java
     - name: Test sample projects
       run: mvn -B test --file jasypt-spring-boot-samples/pom.xml -Djasypt.spring.boot.version=$(mvn --file pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
 
   build_temurin:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         java: [ '8', '11' ]
@@ -43,25 +59,41 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Set up Java ${{ matrix.java }} Temurin
-      uses: actions/setup-java@v2
+      uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: ${{ matrix.java }}
+        cache: maven
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      env:
+        TEST_FILTER: ${{ inputs.test-filter }}
+      run: |
+        TEST_ARGS=()
+        if [ -n "$TEST_FILTER" ]; then TEST_ARGS=("-Dtest=${TEST_FILTER// /,}" -Dsurefire.failIfNoSpecifiedTests=false); fi
+        mvn -B package --file pom.xml "${TEST_ARGS[@]}"
     - name: Install artifact locally
       run: mvn -B install -DskipTests --file pom.xml
+    - name: Upload jasypt-spring-boot jar
+      if: matrix.java == '11'
+      uses: actions/upload-artifact@v4
+      with:
+        name: jasypt-spring-boot-jar
+        path: jasypt-spring-boot/target/jasypt-spring-boot-*.jar
+        if-no-files-found: error
     - name: Checkout sample projects
       uses: actions/checkout@v3
       with:
         repository: ulisesbocchio/jasypt-spring-boot-samples
         path: jasypt-spring-boot-samples
-        ref: master
-        token: ${{ secrets.CHECKOUT_PAT }}
+        ref: 64c90709a20ff1dce6959332fd66b6473f61244a
+    - name: Drop sample test relying on the removed GCM zero-salt fallback (CVE-2026-9370)
+      # jasypt.encryptor.gcm-secret-key-password without gcm-secret-key-salt is now rejected instead of deriving the key with an all-zero salt
+      run: rm jasypt-spring-boot-samples/jasypt-spring-boot-demo-custom-encryptor-gcm/src/test/java/demo/NoSaltPasswordGcmEncryptorDemoApplicationTest.java
     - name: Test sample projects
       run: mvn -B test --file jasypt-spring-boot-samples/pom.xml -Djasypt.spring.boot.version=$(mvn --file pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
   build_zulu_boot3:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         java: [ '17', '18', '19' ]
@@ -69,9 +101,17 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Set up Java ${{ matrix.java }} Zulu
-        uses: actions/setup-java@v2
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: ${{ matrix.java }}
+          cache: maven
       - name: Build with Maven
-        run: mvn -B package --file pom.xml -Dspring.boot.version=3.0.0 -Dspring.cloud.version=2022.0.0-RC2
+        env:
+          # JDK 18 (EOL, never patched) NPEs in CgroupInfo on cgroup-v2 runners (JDK-8287107)
+          JAVA_TOOL_OPTIONS: ${{ matrix.java == '18' && '-XX:-UseContainerSupport' || '' }}
+          TEST_FILTER: ${{ inputs.test-filter }}
+        run: |
+          TEST_ARGS=()
+          if [ -n "$TEST_FILTER" ]; then TEST_ARGS=("-Dtest=${TEST_FILTER// /,}" -Dsurefire.failIfNoSpecifiedTests=false); fi
+          mvn -B package --file pom.xml "${TEST_ARGS[@]}" -Dspring.boot.version=3.0.0 -Dspring.cloud.version=2022.0.0-RC2
